@@ -4,29 +4,21 @@ from datetime import datetime
 import os
 from io import BytesIO
 import googlemaps
+from streamlit_folium import st_folium
+import folium
 
 # --- Inisialisasi Google Maps ---
-# Mengambil API Key dari Secrets Streamlit (Lebih Aman)
 try:
     gmaps = googlemaps.Client(key=st.secrets["GMAPS_KEY"])
 except:
     gmaps = None
 
-def get_address_from_coords(lat_str, lng_str):
-    """Fungsi untuk mengambil alamat dari Google Maps"""
-    if not gmaps:
-        return "API Key belum diatur di Secrets."
+def get_address_from_coords(lat, lng):
+    if not gmaps: return "API Key belum diatur."
     try:
-        # Membersihkan input koordinat (menghilangkan S, E, dan spasi)
-        lat = float(lat_str.upper().replace('S', '').replace(',', '.').strip()) * -1
-        lng = float(lng_str.upper().replace('E', '').replace(',', '.').strip())
-        
-        reverse_geocode_result = gmaps.reverse_geocode((lat, lng))
-        if reverse_geocode_result:
-            return reverse_geocode_result[0]['formatted_address']
-        return "Alamat tidak ditemukan."
-    except Exception as e:
-        return f"Error: Pastikan format koordinat benar (contoh: 5,0382S)"
+        res = gmaps.reverse_geocode((lat, lng))
+        return res[0]['formatted_address'] if res else "Alamat tidak ditemukan."
+    except: return "Gagal ambil alamat."
 
 def add_stamp_to_image(image, text_content):
     target_width = 1280
@@ -38,80 +30,85 @@ def add_stamp_to_image(image, text_content):
     
     font_size = int(width * 0.04) 
     font_file = "arial.ttf"
-    
     try:
         font = ImageFont.truetype(font_file, font_size) if os.path.exists(font_file) else ImageFont.load_default()
-    except:
-        font = ImageFont.load_default()
+    except: font = ImageFont.load_default()
 
-    temp_draw = ImageDraw.Draw(img)
-    bbox = temp_draw.multiline_textbbox((0, 0), text_content, font=font, align="right")
-    text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw = ImageDraw.Draw(img)
+    bbox = draw.multiline_textbbox((0, 0), text_content, font=font, align="right")
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    mx, my = int(width * 0.03), int(height * 0.03)
+    x, y = width - tw - mx, height - th - my
 
-    margin_x, margin_y = int(width * 0.03), int(height * 0.03)
-    x, y = width - text_width - margin_x, height - text_height - margin_y
-
-    shadow_layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow_layer)
-    offset = max(2, int(font_size / 15))
-    shadow_draw.multiline_text((x + offset, y + offset), text_content, font=font, fill=(0, 0, 0, 160), align="right")
+    # Shadow
+    shadow = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    s_draw = ImageDraw.Draw(shadow)
+    off = max(2, int(font_size / 15))
+    s_draw.multiline_text((x + off, y + off), text_content, font=font, fill=(0, 0, 0, 160), align="right")
     
-    final_img = Image.alpha_composite(img, shadow_layer.filter(ImageFilter.GaussianBlur(radius=max(1, int(font_size / 30)))))
-    ImageDraw.Draw(final_img).multiline_text((x, y), text_content, font=font, fill="white", align="right")
+    final = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(radius=max(1, int(font_size / 30)))))
+    ImageDraw.Draw(final).multiline_text((x, y), text_content, font=font, fill="white", align="right")
+    return final
 
-    return final_img
+# --- UI ---
+st.set_page_config(page_title="GPS Stamp Pro", layout="wide")
+st.title("📸 Stamp Foto & Map Picker (Fake GPS Style)")
 
-# --- UI STREAMLIT ---
-st.set_page_config(page_title="Stamp Foto GPS", layout="wide")
-st.title("📸 Stamp Foto Google Maps Otomatis")
-
-if 'processed_images' not in st.session_state:
-    st.session_state.processed_images = {}
-
-uploaded_files = st.file_uploader("📂 Pilih Foto", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📂 Upload Foto", type=["jpg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
-    with st.form("form_proses"):
-        input_data = []
-        for i, file in enumerate(uploaded_files[:5]):
-            st.markdown(f"### Foto #{i+1}")
-            col_img, col_ctrl = st.columns([1, 2])
+    if 'data_per_foto' not in st.session_state:
+        st.session_state.data_per_foto = {}
+
+    for i, file in enumerate(uploaded_files[:3]): # Limit 3 foto agar ringan
+        st.markdown(f"---")
+        st.subheader(f"Edit Foto #{i+1}")
+        
+        col_img, col_map = st.columns([1, 1])
+        
+        # Inisialisasi posisi awal (Default Lampung)
+        lat_init, lng_init = -5.0382, 105.2763
+        
+        with col_map:
+            st.info("📍 Klik pada peta untuk mengubah/menggeser lokasi (Fake GPS)")
+            m = folium.Map(location=[lat_init, lng_init], zoom_start=15)
+            m.add_child(folium.LatLngPopup()) # Biar bisa klik dapat koordinat
+            map_data = st_folium(m, height=300, key=f"map_{i}")
             
-            with col_img:
-                st.image(Image.open(file), use_container_width=True)
+            # Jika peta diklik, update koordinat
+            if map_data.get("last_clicked"):
+                lat_init = map_data["last_clicked"]["lat"]
+                lng_init = map_data["last_clicked"]["lng"]
+
+        with col_img:
+            # Format tampilan koordinat ala GPS asli
+            lat_disp = f"{abs(lat_init):.4f}{'S' if lat_init < 0 else 'N'}"
+            lng_disp = f"{abs(lng_init):.4f}{'E' if lng_init > 0 else 'W'}"
             
-            with col_ctrl:
-                c1, c2 = st.columns(2)
-                in_lat = c1.text_input("Latitude", value="5,0382S", key=f"lat_{i}")
-                in_lng = c2.text_input("Longitude", value="105,2763E", key=f"lng_{i}")
-                
-                # Tombol Aksi Otomatis
-                current_addr = "Tanggul Angin, Lampung" # Default awal
-                if st.form_submit_button(f"🔍 Cek Alamat Otomatis #{i+1}"):
-                    current_addr = get_address_from_coords(in_lat, in_lng)
-                
-                in_waktu = st.text_input("Waktu", value=datetime.now().strftime("%d %b %Y %H.%M.%S"), key=f"w_{i}")
-                in_lokasi = st.text_area("Lokasi (Bisa Edit Manual)", value=current_addr, key=f"l_{i}")
-                
-                teks_full = f"{in_waktu}\n{in_lat} {in_lng}\n{in_lokasi}"
-                input_data.append({"file": file, "teks": teks_full, "index": i, "nama": in_waktu})
+            c1, c2 = st.columns(2)
+            final_lat = c1.text_input("Lat", value=lat_disp, key=f"it_lat_{i}")
+            final_lng = c2.text_input("Lng", value=lng_disp, key=f"it_lng_{i}")
+            
+            # Tombol Ambil Alamat Otomatis
+            auto_addr = ""
+            if st.button(f"🔍 Ambil Alamat dari Peta #{i+1}"):
+                auto_addr = get_address_from_coords(lat_init, lng_init)
+            
+            in_lokasi = st.text_area("Detail Lokasi", value=auto_addr if auto_addr else "Tanggul Angin, Lampung", key=f"loc_{i}")
+            in_waktu = st.text_input("Waktu", value=datetime.now().strftime("%d %b %Y %H.%M.%S"), key=f"tim_{i}")
 
-        submit_all = st.form_submit_button("🚀 PROSES SEMUA FOTO")
+            # Tombol Proses Foto Ini
+            if st.button(f"🚀 Proses Stamp Foto #{i+1}"):
+                full_text = f"{in_waktu}\n{final_lat} {final_lng}\n{in_lokasi}"
+                img_res = add_stamp_to_image(Image.open(file), full_text)
+                st.session_state.data_per_foto[i] = {"img": img_res.convert("RGB"), "nama": in_waktu}
+                st.success(f"Foto #{i+1} Berhasil Di-stamp!")
 
-    if submit_all:
-        for item in input_data:
-            img = Image.open(item["file"])
-            res = add_stamp_to_image(img, item["teks"])
-            st.session_state.processed_images[item["index"]] = {"image": res.convert("RGB"), "nama": item["nama"]}
-        st.success("✅ Selesai!")
-
-# --- DOWNLOAD AREA ---
-if st.session_state.processed_images:
-    st.markdown("---")
-    cols = st.columns(len(st.session_state.processed_images))
-    for i, (idx, data) in enumerate(st.session_state.processed_images.items()):
-        with cols[i]:
-            st.image(data["image"], use_container_width=True)
-            buf = BytesIO()
-            data["image"].save(buf, format="JPEG", quality=95)
-            st.download_button("Download", buf.getvalue(), file_name=f"{data['nama']}.jpg", key=f"dl_{idx}")
+# --- HASIL ---
+if 'data_per_foto' in st.session_state and st.session_state.data_per_foto:
+    st.markdown("### 📥 Download Hasil")
+    for idx, data in st.session_state.data_per_foto.items():
+        st.image(data["img"], width=400)
+        buf = BytesIO()
+        data["img"].save(buf, format="JPEG")
+        st.download_button(f"Download Foto #{idx+1}", buf.getvalue(), f"stamp_{idx}.jpg")
