@@ -3,3 +3,4 @@ Pillow
 googlemaps
 streamlit-folium
 folium
+requests
