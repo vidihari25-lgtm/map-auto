@@ -7,6 +7,7 @@ import googlemaps
 from streamlit_folium import st_folium
 import folium
 import textwrap
+import requests # Tambahan library requests
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="GPS Stamp Pro", layout="wide")
@@ -25,7 +26,7 @@ with st.sidebar:
         st.rerun()
     st.info("Tombol ini akan menghapus semua foto dan mereset lokasi.")
 
-# --- FUNGSI GOOGLE MAPS ---
+# --- FUNGSI GOOGLE MAPS (GEOCODING & STATIC MAP) ---
 def get_address_from_coords(lat, lng):
     try:
         gmaps = googlemaps.Client(key=st.secrets["GMAPS_KEY"])
@@ -34,63 +35,101 @@ def get_address_from_coords(lat, lng):
     except:
         return "API Key Error / Limit Habis"
 
-# --- FUNGSI STAMP FOTO (UPDATE: LEBIH PENDEK & RAPI) ---
-def add_stamp_to_image(image, waktu, koord, lokasi):
-    # 1. Resize proporsional
+def get_static_map_image(lat, lng, zoom=15, size=(300, 300)):
+    """Mengambil gambar peta statis dari Google Maps API"""
+    api_key = st.secrets.get("GMAPS_KEY")
+    if not api_key: return None
+    
+    base_url = "https://maps.googleapis.com/maps/api/staticmap?"
+    coords = f"{lat},{lng}"
+    # Parameter untuk URL Google Static Maps
+    params = {
+        'center': coords,
+        'zoom': zoom,
+        'size': f"{size[0]}x{size[1]}",
+        'maptype': 'roadmap',
+        'markers': f"color:red|{coords}", # Menambahkan pin merah
+        'key': api_key
+    }
+    
+    try:
+        response = requests.get(base_url, params=params)
+        response.raise_for_status() # Raise error jika request gagal
+        return Image.open(BytesIO(response.content)).convert("RGBA")
+    except Exception as e:
+        print(f"Gagal mengambil static map: {e}")
+        return None
+
+# --- FUNGSI STAMP FOTO UTAMA (Update: Dengan Peta) ---
+def add_stamp_to_image(image, waktu, koord_str, lokasi, lat_float, lng_float):
+    # 1. Resize proporsional foto utama
     target_width = 1280
     w_percent = (target_width / float(image.size[0]))
     h_size = int((float(image.size[1]) * float(w_percent)))
     image = image.resize((target_width, h_size), Image.Resampling.LANCZOS)
     img = image.convert("RGBA")
+    width, height = img.size
     
-    # 2. Siapkan Font (Dikecilkan jadi 3% agar tidak terlalu panjang)
-    font_size = int(img.width * 0.03) 
+    # --- BAGIAN TEXT STAMP (Kanan Bawah) ---
+    font_size = int(width * 0.03) 
     font_file = "arial.ttf"
     try:
         font = ImageFont.truetype(font_file, font_size) if os.path.exists(font_file) else ImageFont.load_default()
     except:
         font = ImageFont.load_default()
 
-    # 3. Text Wrapping (DIPERKETAT jadi 30 karakter)
-    # Ini kuncinya: Memaksa teks turun baris lebih cepat agar stamp tidak melebar
+    # Text Wrapping
     lokasi_wrapped = "\n".join(textwrap.wrap(lokasi, width=30))
-    final_text = f"{waktu}\n{koord}\n{lokasi_wrapped}"
+    final_text = f"{waktu}\n{koord_str}\n{lokasi_wrapped}"
 
-    # 4. Hitung Ukuran Text
+    # Hitung Ukuran Text
     draw = ImageDraw.Draw(img)
     bbox = draw.multiline_textbbox((0, 0), final_text, font=font, align="right")
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
 
-    # 5. Tentukan Posisi (Pojok Kanan Bawah)
-    margin_x = int(img.width * 0.03)
-    margin_y = int(img.height * 0.03)
-    x = img.width - text_width - margin_x
-    y = img.height - text_height - margin_y
+    # Margin dasar
+    margin_x = int(width * 0.03)
+    margin_y = int(height * 0.03)
 
-    # 6. Buat Shadow TEXT (Tanpa Kotak)
+    # Posisi Text (Kanan Bawah)
+    text_x = width - text_width - margin_x
+    text_y = height - text_height - margin_y
+
+    # Buat Shadow TEXT
     shadow = Image.new('RGBA', img.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
-    
-    # Efek bayangan hitam di belakang huruf
-    shadow_offset = 2
-    shadow_draw.multiline_text(
-        (x + shadow_offset, y + shadow_offset), 
-        final_text, 
-        font=font, 
-        fill=(0, 0, 0, 220), # Hitam pekat transparan
-        align="right"
-    )
-    
-    # Blur bayangan agar halus
+    shadow_draw.multiline_text((text_x + 2, text_y + 2), final_text, font=font, fill=(0, 0, 0, 220), align="right")
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=2))
-    final = Image.alpha_composite(img, shadow)
+    img = Image.alpha_composite(img, shadow)
     
-    # 7. Tulis Teks Utama (Putih)
-    final_draw = ImageDraw.Draw(final)
-    final_draw.multiline_text((x, y), final_text, font=font, fill="white", align="right")
+    # Tulis Teks Utama Putih
+    final_draw = ImageDraw.Draw(img)
+    final_draw.multiline_text((text_x, text_y), final_text, font=font, fill="white", align="right")
+
+    # --- BAGIAN STATIC MAP STAMP (Kiri Bawah) ---
+    # 1. Tentukan ukuran peta (misal: 25% dari lebar foto)
+    map_target_width = int(width * 0.25)
+    # Request ukuran sedikit lebih besar ke Google biar tajam saat di-resize
+    api_map_size = (map_target_width + 100, map_target_width + 100)
     
-    return final.convert("RGB")
+    # 2. Ambil gambar dari Google
+    map_img = get_static_map_image(lat_float, lng_float, size=api_map_size)
+    
+    if map_img:
+        # 3. Resize peta ke ukuran target
+        map_img = map_img.resize((map_target_width, map_target_width), Image.Resampling.LANCZOS)
+        
+        # 4. Tentukan posisi peta (Kiri Bawah, sejajar margin dengan teks)
+        map_x = margin_x
+        # Y dihitung dari bawah, dikurangi tinggi peta dan margin
+        map_y = height - map_img.height - margin_y
+        
+        # 5. Tempelkan peta ke foto utama
+        # Menggunakan mask map_img itu sendiri agar transparansi (jika ada) tertangani
+        img.paste(map_img, (map_x, map_y), map_img)
+
+    return img.convert("RGB")
 
 # --- TAMPILAN UTAMA ---
 st.title("📸 GPS Stamp Pro & Fake Location")
@@ -139,9 +178,16 @@ if uploaded_files:
             progress_bar = st.progress(0)
             
             for i, file in enumerate(uploaded_files):
-                img_result = add_stamp_to_image(Image.open(file), in_waktu, koord_display, in_lokasi)
+                # PANGGIL FUNGSI UTAMA DENGAN TAMBAHAN LAT/LNG FLOAT
+                img_result = add_stamp_to_image(
+                    Image.open(file), 
+                    in_waktu, 
+                    koord_display, 
+                    in_lokasi,
+                    st.session_state.lat, # Kirim lat asli (float)
+                    st.session_state.lng  # Kirim lng asli (float)
+                )
                 
-                # Nama file sesuai tanggal input
                 safe_filename = in_waktu.replace(" ", "-").replace(":", "-").replace("/", "-")
                 filename_final = f"Stamp_{safe_filename}_{i+1}.jpg"
                 
