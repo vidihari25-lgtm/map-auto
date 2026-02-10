@@ -34,7 +34,7 @@ def get_address_from_coords(lat, lng):
     except:
         return "API Key Error / Limit Habis"
 
-# --- FUNGSI STAMP FOTO (TANPA KOTAK HITAM) ---
+# --- FUNGSI STAMP FOTO (UPDATE: LEBIH PENDEK & RAPI) ---
 def add_stamp_to_image(image, waktu, koord, lokasi):
     # 1. Resize proporsional
     target_width = 1280
@@ -43,16 +43,17 @@ def add_stamp_to_image(image, waktu, koord, lokasi):
     image = image.resize((target_width, h_size), Image.Resampling.LANCZOS)
     img = image.convert("RGBA")
     
-    # 2. Siapkan Font
-    font_size = int(img.width * 0.035) 
+    # 2. Siapkan Font (Dikecilkan jadi 3% agar tidak terlalu panjang)
+    font_size = int(img.width * 0.03) 
     font_file = "arial.ttf"
     try:
         font = ImageFont.truetype(font_file, font_size) if os.path.exists(font_file) else ImageFont.load_default()
     except:
         font = ImageFont.load_default()
 
-    # 3. Text Wrapping (Agar stamp tidak melebar ke samping)
-    lokasi_wrapped = "\n".join(textwrap.wrap(lokasi, width=40))
+    # 3. Text Wrapping (DIPERKETAT jadi 30 karakter)
+    # Ini kuncinya: Memaksa teks turun baris lebih cepat agar stamp tidak melebar
+    lokasi_wrapped = "\n".join(textwrap.wrap(lokasi, width=30))
     final_text = f"{waktu}\n{koord}\n{lokasi_wrapped}"
 
     # 4. Hitung Ukuran Text
@@ -67,25 +68,22 @@ def add_stamp_to_image(image, waktu, koord, lokasi):
     x = img.width - text_width - margin_x
     y = img.height - text_height - margin_y
 
-    # 6. Buat Shadow TEXT (Bukan Kotak)
-    # Ini agar tulisan putih tetap terbaca di background terang
+    # 6. Buat Shadow TEXT (Tanpa Kotak)
     shadow = Image.new('RGBA', img.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     
-    # Menggambar teks warna hitam sedikit bergeser
+    # Efek bayangan hitam di belakang huruf
     shadow_offset = 2
     shadow_draw.multiline_text(
         (x + shadow_offset, y + shadow_offset), 
         final_text, 
         font=font, 
-        fill=(0, 0, 0, 200), # Hitam transparan
+        fill=(0, 0, 0, 220), # Hitam pekat transparan
         align="right"
     )
     
-    # Beri sedikit blur pada bayangan agar halus
+    # Blur bayangan agar halus
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=2))
-    
-    # Gabungkan Shadow dengan Gambar Asli
     final = Image.alpha_composite(img, shadow)
     
     # 7. Tulis Teks Utama (Putih)
