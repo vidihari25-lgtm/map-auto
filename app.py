@@ -7,7 +7,7 @@ import googlemaps
 from streamlit_folium import st_folium
 import folium
 import textwrap
-import requests # Tambahan library requests
+import requests
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="GPS Stamp Pro", layout="wide")
@@ -36,31 +36,29 @@ def get_address_from_coords(lat, lng):
         return "API Key Error / Limit Habis"
 
 def get_static_map_image(lat, lng, zoom=15, size=(300, 300)):
-    """Mengambil gambar peta statis dari Google Maps API"""
     api_key = st.secrets.get("GMAPS_KEY")
     if not api_key: return None
     
     base_url = "https://maps.googleapis.com/maps/api/staticmap?"
     coords = f"{lat},{lng}"
-    # Parameter untuk URL Google Static Maps
     params = {
         'center': coords,
         'zoom': zoom,
         'size': f"{size[0]}x{size[1]}",
         'maptype': 'roadmap',
-        'markers': f"color:red|{coords}", # Menambahkan pin merah
+        'markers': f"color:red|{coords}",
         'key': api_key
     }
     
     try:
         response = requests.get(base_url, params=params)
-        response.raise_for_status() # Raise error jika request gagal
+        response.raise_for_status()
         return Image.open(BytesIO(response.content)).convert("RGBA")
     except Exception as e:
         print(f"Gagal mengambil static map: {e}")
         return None
 
-# --- FUNGSI STAMP FOTO UTAMA (Update: Dengan Peta) ---
+# --- FUNGSI STAMP FOTO UTAMA (Update: Ukuran Peta Dikecilkan) ---
 def add_stamp_to_image(image, waktu, koord_str, lokasi, lat_float, lng_float):
     # 1. Resize proporsional foto utama
     target_width = 1280
@@ -108,25 +106,24 @@ def add_stamp_to_image(image, waktu, koord_str, lokasi, lat_float, lng_float):
     final_draw.multiline_text((text_x, text_y), final_text, font=font, fill="white", align="right")
 
     # --- BAGIAN STATIC MAP STAMP (Kiri Bawah) ---
-    # 1. Tentukan ukuran peta (misal: 25% dari lebar foto)
-    map_target_width = int(width * 0.25)
-    # Request ukuran sedikit lebih besar ke Google biar tajam saat di-resize
-    api_map_size = (map_target_width + 100, map_target_width + 100)
+    # UPDATE: Mengubah persentase lebar peta dari 0.25 menjadi 0.18 (18%)
+    map_target_width = int(width * 0.18)
     
-    # 2. Ambil gambar dari Google
+    # Request ukuran ke Google tetap agak besar biar tajam
+    api_map_size = (map_target_width + 150, map_target_width + 150)
+    
+    # Ambil gambar dari Google
     map_img = get_static_map_image(lat_float, lng_float, size=api_map_size)
     
     if map_img:
-        # 3. Resize peta ke ukuran target
+        # Resize peta ke ukuran target yang sudah dikecilkan (18%)
         map_img = map_img.resize((map_target_width, map_target_width), Image.Resampling.LANCZOS)
         
-        # 4. Tentukan posisi peta (Kiri Bawah, sejajar margin dengan teks)
+        # Tentukan posisi peta (Kiri Bawah)
         map_x = margin_x
-        # Y dihitung dari bawah, dikurangi tinggi peta dan margin
         map_y = height - map_img.height - margin_y
         
-        # 5. Tempelkan peta ke foto utama
-        # Menggunakan mask map_img itu sendiri agar transparansi (jika ada) tertangani
+        # Tempelkan peta
         img.paste(map_img, (map_x, map_y), map_img)
 
     return img.convert("RGB")
@@ -178,14 +175,13 @@ if uploaded_files:
             progress_bar = st.progress(0)
             
             for i, file in enumerate(uploaded_files):
-                # PANGGIL FUNGSI UTAMA DENGAN TAMBAHAN LAT/LNG FLOAT
                 img_result = add_stamp_to_image(
                     Image.open(file), 
                     in_waktu, 
                     koord_display, 
                     in_lokasi,
-                    st.session_state.lat, # Kirim lat asli (float)
-                    st.session_state.lng  # Kirim lng asli (float)
+                    st.session_state.lat,
+                    st.session_state.lng
                 )
                 
                 safe_filename = in_waktu.replace(" ", "-").replace(":", "-").replace("/", "-")
