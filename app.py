@@ -15,7 +15,8 @@ st.set_page_config(page_title="GPS Stamp Pro", layout="wide")
 # --- INITIALIZE SESSION STATE ---
 if 'lat' not in st.session_state: st.session_state.lat = -5.0382
 if 'lng' not in st.session_state: st.session_state.lng = 105.2763
-if 'manual_addr' not in st.session_state: st.session_state.manual_addr = "Tanggul Angin, Lampung"
+# Default value diset kosong dulu biar kelihatan efeknya nanti
+if 'manual_addr' not in st.session_state: st.session_state.manual_addr = "Desa Tanggul Angin\nKecamatan Punggur\nKabupaten Lampung Tengah\nLampung"
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
 
 # --- FUNGSI RESET / GANTI FOTO ---
@@ -26,15 +27,58 @@ with st.sidebar:
         st.rerun()
     st.info("Tombol ini akan menghapus semua foto dan mereset lokasi.")
 
-# --- FUNGSI GOOGLE MAPS (GEOCODING & STATIC MAP) ---
-def get_address_from_coords(lat, lng):
+# --- FUNGSI GOOGLE MAPS: PARSING ALAMAT SPESIFIK ---
+def get_structured_address(lat, lng):
     try:
         gmaps = googlemaps.Client(key=st.secrets["GMAPS_KEY"])
+        # Request data alamat lengkap
         res = gmaps.reverse_geocode((lat, lng))
-        return res[0]['formatted_address'] if res else "Alamat tidak ditemukan"
-    except:
-        return "API Key Error / Limit Habis"
+        
+        if not res:
+            return "Lokasi tidak ditemukan"
+            
+        # Variabel penampung
+        desa = ""
+        kecamatan = ""
+        kabupaten = ""
+        provinsi = ""
+        
+        # Loop komponen alamat untuk mencari level administrasi
+        # Mengambil hasil pertama (res[0]) yang paling akurat
+        for comp in res[0]['address_components']:
+            types = comp['types']
+            
+            # Level 4 = Desa / Kelurahan
+            if 'administrative_area_level_4' in types:
+                desa = comp['long_name']
+            
+            # Level 3 = Kecamatan
+            elif 'administrative_area_level_3' in types:
+                kecamatan = "Kecamatan " + comp['long_name']
+            
+            # Level 2 = Kabupaten / Kota
+            elif 'administrative_area_level_2' in types:
+                kabupaten = comp['long_name']
+                
+            # Level 1 = Provinsi
+            elif 'administrative_area_level_1' in types:
+                provinsi = comp['long_name']
+        
+        # Susun string ke bawah (Filter yang kosong jika data google tidak lengkap)
+        alamat_list = [desa, kecamatan, kabupaten, provinsi]
+        # Gabungkan hanya yang ada isinya dengan baris baru
+        alamat_rapi = "\n".join([item for item in alamat_list if item])
+        
+        # Jika semua kosong (misal di tengah laut), ambil formatted address biasa
+        if not alamat_rapi:
+            return res[0]['formatted_address']
+            
+        return alamat_rapi
 
+    except Exception as e:
+        return f"Error API: {str(e)}"
+
+# --- FUNGSI STATIC MAP ---
 def get_static_map_image(lat, lng, zoom=15, size=(300, 300)):
     api_key = st.secrets.get("GMAPS_KEY")
     if not api_key: return None
@@ -55,12 +99,11 @@ def get_static_map_image(lat, lng, zoom=15, size=(300, 300)):
         response.raise_for_status()
         return Image.open(BytesIO(response.content)).convert("RGBA")
     except Exception as e:
-        print(f"Gagal mengambil static map: {e}")
         return None
 
-# --- FUNGSI STAMP FOTO UTAMA (Update: Ukuran Peta Dikecilkan) ---
+# --- FUNGSI STAMP FOTO (FONT ROBOTO) ---
 def add_stamp_to_image(image, waktu, koord_str, lokasi, lat_float, lng_float):
-    # 1. Resize proporsional foto utama
+    # 1. Resize proporsional
     target_width = 1280
     w_percent = (target_width / float(image.size[0]))
     h_size = int((float(image.size[1]) * float(w_percent)))
@@ -68,17 +111,23 @@ def add_stamp_to_image(image, waktu, koord_str, lokasi, lat_float, lng_float):
     img = image.convert("RGBA")
     width, height = img.size
     
-    # --- BAGIAN TEXT STAMP (Kanan Bawah) ---
+    # --- 2. FONT ROBOTO ---
     font_size = int(width * 0.03) 
-    font_file = "arial.ttf"
+    # Pastikan nama file font sesuai dengan yang diupload
+    font_file = "Roboto-Regular.ttf" 
+    
     try:
-        font = ImageFont.truetype(font_file, font_size) if os.path.exists(font_file) else ImageFont.load_default()
+        if os.path.exists(font_file):
+            font = ImageFont.truetype(font_file, font_size)
+        else:
+            # Fallback ke default jika lupa upload font
+            font = ImageFont.load_default()
     except:
         font = ImageFont.load_default()
 
-    # Text Wrapping
-    lokasi_wrapped = "\n".join(textwrap.wrap(lokasi, width=30))
-    final_text = f"{waktu}\n{koord_str}\n{lokasi_wrapped}"
+    # Text Wrapping (Sedikit diperlebar karena formatnya sudah per baris)
+    # Kita split berdasarkan enter (\n) yang sudah dibuat di fungsi alamat
+    final_text = f"{waktu}\n{koord_str}\n{lokasi}"
 
     # Hitung Ukuran Text
     draw = ImageDraw.Draw(img)
@@ -86,44 +135,36 @@ def add_stamp_to_image(image, waktu, koord_str, lokasi, lat_float, lng_float):
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
 
-    # Margin dasar
+    # Margin
     margin_x = int(width * 0.03)
     margin_y = int(height * 0.03)
-
-    # Posisi Text (Kanan Bawah)
     text_x = width - text_width - margin_x
     text_y = height - text_height - margin_y
 
-    # Buat Shadow TEXT
+    # Shadow Text
     shadow = Image.new('RGBA', img.size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
     shadow_draw.multiline_text((text_x + 2, text_y + 2), final_text, font=font, fill=(0, 0, 0, 220), align="right")
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=2))
     img = Image.alpha_composite(img, shadow)
     
-    # Tulis Teks Utama Putih
+    # Text Putih
     final_draw = ImageDraw.Draw(img)
     final_draw.multiline_text((text_x, text_y), final_text, font=font, fill="white", align="right")
 
-    # --- BAGIAN STATIC MAP STAMP (Kiri Bawah) ---
-    # UPDATE: Mengubah persentase lebar peta dari 0.25 menjadi 0.18 (18%)
+    # --- 3. STATIC MAP (18%) ---
     map_target_width = int(width * 0.18)
-    
-    # Request ukuran ke Google tetap agak besar biar tajam
     api_map_size = (map_target_width + 150, map_target_width + 150)
     
-    # Ambil gambar dari Google
     map_img = get_static_map_image(lat_float, lng_float, size=api_map_size)
     
     if map_img:
-        # Resize peta ke ukuran target yang sudah dikecilkan (18%)
         map_img = map_img.resize((map_target_width, map_target_width), Image.Resampling.LANCZOS)
+        # Tambahkan border putih tipis pada peta biar cantik
+        # (Opsional, tapi membuat peta lebih menonjol)
         
-        # Tentukan posisi peta (Kiri Bawah)
         map_x = margin_x
         map_y = height - map_img.height - margin_y
-        
-        # Tempelkan peta
         img.paste(map_img, (map_x, map_y), map_img)
 
     return img.convert("RGB")
@@ -160,12 +201,14 @@ if uploaded_files:
         
         st.code(f"Koordinat: {koord_display}")
         
-        if st.button("🔍 Ambil Alamat Google Maps"):
-            with st.spinner("Mengambil alamat..."):
-                st.session_state.manual_addr = get_address_from_coords(st.session_state.lat, st.session_state.lng)
+        # Tombol mengambil alamat TERSTRUKTUR
+        if st.button("🔍 Ambil Alamat (Format Desa/Kec/Kab)"):
+            with st.spinner("Mengurai alamat administrasi..."):
+                # Panggil fungsi baru get_structured_address
+                st.session_state.manual_addr = get_structured_address(st.session_state.lat, st.session_state.lng)
             st.rerun()
 
-        in_lokasi = st.text_area("Alamat (Bisa Diedit)", value=st.session_state.manual_addr, height=100)
+        in_lokasi = st.text_area("Alamat (Bisa Diedit)", value=st.session_state.manual_addr, height=130)
         in_waktu = st.text_input("Waktu Stamp", value=datetime.now().strftime("%d %b %Y %H.%M"))
         
         st.warning(f"Siap memproses {len(uploaded_files)} foto.")
